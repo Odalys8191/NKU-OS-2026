@@ -1,6 +1,8 @@
 #include <console.h>
 #include <defs.h>
 #include <pmm.h>
+#include <best_fit_pmm.h>
+#include <slub.h>
 #include <stdio.h>
 #include <string.h>
 #include <dtb.h>
@@ -38,6 +40,14 @@ int kern_init(void) {
 
     // grade_backtrace();
     pmm_init();  // init physical memory management
+
+#if defined(LAB2_PMM_BEST_FIT)
+    best_fit_extra_check();
+#endif
+#if defined(LAB2_ENABLE_SLUB)
+    slub_init();
+    slub_check();
+#endif
 
     /* do nothing */
     while (1)

@@ -153,6 +153,18 @@ check_result() {
     show_check_tag "$1"
     shift
 
+    # OpenSBI writes its banner immediately, so a non-empty output file does
+    # not mean that the kernel has reached the injected tests yet.  Wait for
+    # this check's first expected marker (up to 15 seconds).
+    wait_i=0
+    while [ $wait_i -lt 15 ]; do
+        if [ -s "$qemu_out" ] && $grep -F "$2" "$qemu_out" > /dev/null 2>&1; then
+            break
+        fi
+        sleep 1
+        wait_i=`expr $wait_i + 1`
+    done
+
     if [ ! -s $qemu_out ]; then
         sleep 4
     fi
@@ -222,7 +234,7 @@ osimg=$(make_print ucoreimg)
 swapimg=$(make_print swapimg)
 
 ## qemu-options
-qemuopts="-machine virt -nographic -bios default -device loader,file=bin/ucore.img,addr=0x80200000"
+qemuopts="-machine virt -nographic -bios default -kernel bin/ucore.img"
 
 ## the lab2 kernel only while(1) after entering kernel mode and never calls readline,
 ## so no break function is needed and brkfun stays empty

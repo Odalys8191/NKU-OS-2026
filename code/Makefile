@@ -27,10 +27,32 @@ endif
 HOSTCC		:= gcc
 HOSTCFLAGS	:= -Wall -O2
 
+# Lab2 build-time allocator selection. Run `make clean` before changing these
+# values because the original build system does not track flag-only changes.
+PMM ?= best_fit
+SLUB ?= 0
+
+ifeq ($(PMM),best_fit)
+DEFS += -DLAB2_PMM_BEST_FIT
+else ifeq ($(PMM),first_fit)
+DEFS += -DLAB2_PMM_FIRST_FIT
+else ifeq ($(PMM),buddy)
+DEFS += -DLAB2_PMM_BUDDY
+else
+$(error unsupported PMM '$(PMM)'; use best_fit, first_fit, or buddy)
+endif
+
+ifeq ($(SLUB),1)
+DEFS += -DLAB2_ENABLE_SLUB
+else ifneq ($(SLUB),0)
+$(error unsupported SLUB '$(SLUB)'; use 0 or 1)
+endif
+
 GDB		:= $(GCCPREFIX)gdb
 
 CC		:= $(GCCPREFIX)gcc
-CFLAGS  := -mcmodel=medany -std=gnu99 -Wno-unused -Werror 
+CFLAGS  := -march=rv64imac_zicsr_zifencei -mabi=lp64 -mcmodel=medany
+CFLAGS  += -std=gnu99 -Wno-unused -Werror -fno-pie -fno-pic
 CFLAGS	+= -fno-builtin -Wall -O2 -nostdinc $(DEFS)
 CFLAGS	+= -fno-stack-protector -ffunction-sections -fdata-sections
 CFLAGS	+= -g
@@ -165,14 +187,14 @@ qemu: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
 		-machine virt \
 		-nographic \
 		-bios default \
-		-device loader,file=$(UCOREIMG),addr=0x80200000
+		-kernel $(UCOREIMG)
 
 debug: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
 	$(V)$(QEMU) \
 		-machine virt \
 		-nographic \
 		-bios default \
-		-device loader,file=$(UCOREIMG),addr=0x80200000\
+		-kernel $(UCOREIMG) \
 		-s -S
 
 gdb:
@@ -186,7 +208,7 @@ test: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
 		-machine virt \
 		-nographic \
 		-bios default \
-		-device loader,file=$(UCOREIMG),addr=0x80200000
+		-kernel $(UCOREIMG)
 spike: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
 	$(V)$(SPIKE) $(UCOREIMG)
 

@@ -6,7 +6,7 @@ backend="${1:-best_fit}"
 case "$backend" in
     best_fit) flags=();;
     buddy) flags=(-DSLUB_TEST_BUDDY);;
-    *) printf 'Usage: bash lab2/tests/slub/run.sh {best_fit|buddy}\n' >&2; exit 2;;
+    *) printf 'Usage: bash code/tests/slub/run.sh {best_fit|buddy}\n' >&2; exit 2;;
 esac
 if [[ ! -f "kern/mm/${backend}_pmm.c" || ! -f "kern/mm/${backend}_pmm.h" ]]; then
     printf 'NOT VERIFIED: real %s PMM source/header not available\n' "$backend" >&2
@@ -15,12 +15,14 @@ fi
 out="../.artifacts/slub-check/$backend"
 mkdir -p "$out"
 lab_dir="$PWD"
+GCCPREFIX="${GCCPREFIX:-riscv64-unknown-elf-}"
 uname -m
-riscv64-unknown-elf-gcc --version | head -n 1
+"${GCCPREFIX}gcc" --version | head -n 1
 qemu-system-riscv64 --version | head -n 1
 (
 cd "$out"
-riscv64-unknown-elf-gcc -mcmodel=medany -std=gnu99 -O2 -g \
+"${GCCPREFIX}gcc" -march=rv64imac_zicsr_zifencei -mabi=lp64 -mcmodel=medany \
+    -std=gnu99 -O2 -g -static -no-pie -fno-pie -fno-pic \
     -Wall -Werror -Wno-unused -fno-builtin -fno-stack-protector \
     -ffunction-sections -fdata-sections -fstack-usage \
     -nostdinc -nostdlib "${flags[@]}" \
@@ -32,8 +34,8 @@ riscv64-unknown-elf-gcc -mcmodel=medany -std=gnu99 -O2 -g \
 ) > "$out/compile.log" 2>&1 || {
         cat "$out/compile.log"; exit 1;
     }
-timeout 60s qemu-system-riscv64 -machine virt -m 128M -nographic -bios default \
-    -kernel "$out/check.elf" > "$out/qemu.log" 2>&1
+timeout 180s qemu-system-riscv64 -machine virt -m 128M -nographic -bios default \
+    -kernel "$out/check.elf" > "$out/qemu.log" 2>&1 || true
 if grep -E 'FAIL|kernel panic' "$out/qemu.log"; then exit 1; fi
 grep -E '^slub_check:|^PASS' "$out/qemu.log"
 grep -q '^PASS SLUB_MODULE' "$out/qemu.log"

@@ -58,7 +58,11 @@ bootstacktop:
 boot_page_table_sv39:
     # 0xffffffff_c0000000 map to 0x80000000 (1G)
     # 前 511 个页表项均设置为 0 ，因此 V=0 ，意味着是空的(unmapped)
-    .zero 8 * 511
+    # Entry 2 provides the temporary identity mapping needed immediately after
+    # satp is enabled; entry 511 provides the kernel's higher-half mapping.
+    .zero 8 * 2
+    .quad (0x80000 << 10) | 0xcf # VRWXAD
+    .zero 8 * 508
     # 设置最后一个页表项，PPN=0x80000，标志位 VRWXAD 均为 1
     .quad (0x80000 << 10) | 0xcf # VRWXAD
 
