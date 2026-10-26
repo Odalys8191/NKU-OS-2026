@@ -1513,18 +1513,20 @@ Buddy System 采用**管理器内建自检 \+ 独立 RISC\-V 模块测试**两�
 在 WSL 的项目根目录执行：
 
 ```Bash
-cd code
-GCCPREFIX=riscv64-linux-gnu- bash tests/buddy/run.sh
+cd /mnt/c/Users/ASUS/Desktop/OS/NKU-OS-2026-lab2/code
+
+mkdir -p ../.artifacts/buddy
+
+riscv64-unknown-elf-gcc --version
+
+riscv64-unknown-elf-gcc -march=rv64imac_zicsr_zifencei -mabi=lp64 -mcmodel=medany -std=gnu99 -O2 -g -static -no-pie -fno-pie -fno-pic -Wall -Werror -Wno-unused -fno-builtin -fno-stack-protector -nostdinc -nostdlib -Ducore_test -Ilibs -Ikern/debug -Ikern/mm -Ikern/driver -Wl,-T,tests/best_fit/kernel.ld tests/buddy/entry.S tests/buddy/check.c libs/printfmt.c libs/string.c libs/sbi.c -lgcc -o ../.artifacts/buddy/check.elf
+
+ls -lh ../.artifacts/buddy/check.elf
+
+timeout -k 2s 10s qemu-system-riscv64 -machine virt -nographic -bios default -kernel ../.artifacts/buddy/check.elf
 ```
 
-如果安装的是 `riscv64-unknown-elf-gcc`，可直接执行：
-
-```Bash
-cd code
-bash tests/buddy/run.sh
-```
-
-脚本会以 `-Wall -Werror` 交叉编译独立测试内核，在 QEMU 中运行，并检查日志中不存在 `FAIL` 或 `kernel panic`，且必须出现 `PASS BUDDY_MODULE`。完整通过时关键输出应为：
+检查日志中不存在 `FAIL` 或 `kernel panic`，且必须出现 `PASS BUDDY_MODULE`。完整通过时关键输出应为：
 
 ```Plain Text
 buddy_check() succeeded!
