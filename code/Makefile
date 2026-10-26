@@ -1,4 +1,4 @@
-PROJ	:= lab1
+PROJ	:= lab2
 EMPTY	:=
 SPACE	:= $(EMPTY) $(EMPTY)
 SLASH	:= /
@@ -13,6 +13,9 @@ ifndef QEMU
 QEMU := qemu-system-riscv64
 endif
 
+ifndef SPIKE
+SPIKE := spike
+endif
 
 # eliminate default suffix rules
 .SUFFIXES: .c .S .h
@@ -24,15 +27,37 @@ endif
 HOSTCC		:= gcc
 HOSTCFLAGS	:= -Wall -O2
 
+# Lab2 build-time allocator selection. Run `make clean` before changing these
+# values because the original build system does not track flag-only changes.
+PMM ?= best_fit
+SLUB ?= 0
+
+ifeq ($(PMM),best_fit)
+DEFS += -DLAB2_PMM_BEST_FIT
+else ifeq ($(PMM),first_fit)
+DEFS += -DLAB2_PMM_FIRST_FIT
+else ifeq ($(PMM),buddy)
+DEFS += -DLAB2_PMM_BUDDY
+else
+$(error unsupported PMM '$(PMM)'; use best_fit, first_fit, or buddy)
+endif
+
+ifeq ($(SLUB),1)
+DEFS += -DLAB2_ENABLE_SLUB
+else ifneq ($(SLUB),0)
+$(error unsupported SLUB '$(SLUB)'; use 0 or 1)
+endif
+
 GDB		:= $(GCCPREFIX)gdb
 
 CC		:= $(GCCPREFIX)gcc
-CFLAGS  := -mcmodel=medany -std=gnu99 -Wno-unused -Werror
+CFLAGS  := -march=rv64imac_zicsr_zifencei -mabi=lp64 -mcmodel=medany
+CFLAGS  += -std=gnu99 -Wno-unused -Werror -fno-pie -fno-pic
 CFLAGS	+= -fno-builtin -Wall -O2 -nostdinc $(DEFS)
 CFLAGS	+= -fno-stack-protector -ffunction-sections -fdata-sections
 CFLAGS	+= -g
+CFLAGS2 = $(CFLAGS) -D ucore_test
 CTYPE	:= c S
-
 LD      := $(GCCPREFIX)ld
 LDFLAGS	:= -m elf64lriscv
 LDFLAGS	+= -nostdlib --gc-sections
@@ -63,6 +88,7 @@ listf_cc = $(call listf,$(1),$(CTYPE))
 
 # for cc
 add_files_cc = $(call add_files,$(1),$(CC),$(CFLAGS) $(3),$(2),$(4))
+add_files_cc2 = $(call add_files,$(1),$(CC),$(CFLAGS2) $(3),$(2),$(4))
 create_target_cc = $(call create_target,$(1),$(2),$(3),$(CC),$(CFLAGS))
 
 # for hostcc
@@ -81,7 +107,7 @@ match = $(shell echo $(2) | $(AWK) '{for(i=1;i<=NF;i++){if(match("$(1)","^"$$(i)
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 # include kernel/user
 
-INCLUDE	+= libs 
+INCLUDE	+= libs/
 
 CFLAGS	+= $(addprefix -I,$(INCLUDE))
 
@@ -94,22 +120,22 @@ $(call add_files_cc,$(call listf_cc,$(LIBDIR)),libs,)
 
 KINCLUDE	+= kern/debug/ \
 			   kern/driver/ \
-			   kern/trap/ \
-			   kern/libs/\
 			   kern/mm/ \
 			   kern/arch/
 
 KSRCDIR		+= kern/init \
-			   kern/debug \
 			   kern/libs \
+			   kern/debug \
 			   kern/driver \
-			   kern/trap \
 			   kern/mm
 
 KCFLAGS		+= $(addprefix -I,$(KINCLUDE))
 
+ifeq ($(MAKECMDGOALS),test)
+$(call add_files_cc2,$(call listf_cc,$(KSRCDIR)),kernel,$(KCFLAGS))
+else
 $(call add_files_cc,$(call listf_cc,$(KSRCDIR)),kernel,$(KCFLAGS))
-
+endif
 KOBJS	= $(call read_packet,kernel libs)
 
 # create kernel target
@@ -155,8 +181,7 @@ endif
 TARGETS: $(TARGETS)
 
 .DEFAULT_GOAL := TARGETS
-
-.PHONY: qemu 
+.PHONY: qemu spike test
 qemu: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
 	$(V)$(QEMU) \
 		-machine virt \
@@ -178,20 +203,35 @@ gdb:
     -ex 'set arch riscv:rv64' \
     -ex 'target remote localhost:1234'
 
-	
+test: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
+	$(V)$(QEMU) \
+		-machine virt \
+		-nographic \
+		-bios default \
+		-kernel $(UCOREIMG)
+spike: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
+	$(V)$(SPIKE) $(UCOREIMG)
+
 .PHONY: grade touch
 
 GRADE_GDB_IN	:= .gdb.in
 GRADE_QEMU_OUT	:= .qemu.out
 HANDIN			:= proj$(PROJ)-handin.tar.gz
 
-TOUCH_FILES		:= kern/trap/trap.c
+TOUCH_FILES		:=
 
 MAKEOPTS		:= --quiet --no-print-directory
 
+GRADE_TMP	:= /tmp/lab2_grade
+
 grade:
 	$(V)$(MAKE) $(MAKEOPTS) clean
-	$(V)$(SH) tools/grade.sh
+	$(V)$(RM) -rf $(GRADE_TMP)
+	$(V)$(MKDIR) $(GRADE_TMP)
+	$(V)tar -C . --exclude=.git --exclude=.vscode --exclude=vcs -cf - . | tar -C $(GRADE_TMP) -xf -
+	$(V)python3 tools/inject.py $(GRADE_TMP)
+	$(V)cd $(GRADE_TMP) && $(SH) tools/grade.sh
+	$(V)$(RM) -rf $(GRADE_TMP)
 
 touch:
 	$(V)$(foreach f,$(TOUCH_FILES),$(TOUCH) $(f))
