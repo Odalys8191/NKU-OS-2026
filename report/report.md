@@ -74,7 +74,7 @@
 
 - 主要测试方式：RISC\-V 交叉编译后在 QEMU `virt` 机器上运行，使用内核断言和 `PASS` 标志判断结果
 
-![image\.png](IMAGES/image%201.png)
+![image\.png](images/image%201.png)
 
 # 三、实验整体逻辑分析
 
@@ -417,7 +417,7 @@ dtc -I dtb -O dts /tmp/lab2.dtb -o /tmp/lab2.dts
 grep -A8 -B2 'memory@80000000' /tmp/lab2.dts
 ```
 
-![dtb\_memory\.png](IMAGES/dtb_memory.png)
+![dtb\_memory\.png](images/dtb_memory.png)
 
 
 
@@ -774,7 +774,7 @@ static void buddy_check(void);
 
 Buddy System多阶空闲链表结构示意图：
 
-![buddy\_free\_area\.png](IMAGES/buddy_free_area.png)
+![buddy\_free\_area\.png](images/buddy_free_area.png)
 
 #### 最终提示词
 
@@ -1066,7 +1066,7 @@ Requirements：分别在两种底层配置运行；页数预期包含 header 和
 
 实验采用三个终端协同完成。终端 1 使用 `make debug QEMU="$QEMU_DEBUG"` 启动 QEMU；终端 2 使用普通 GDB 附加到 QEMU 进程，在 `riscv_cpu_tlb_fill()` 和 `get_physical_address()` 等函数处设置断点；终端 3 使用 `riscv64-unknown-elf-gdb` 连接 QEMU 提供的 GDB 调试接口，对 uCore 内核进行调试。为避免远程调试过程中出现 `Ignoring packet error`，在终端 3 中设置 `set remotetimeout unlimited`。
 
-![111\.png](IMAGES/111.png)
+![111\.png](images/111.png)
 
 
 
@@ -1086,7 +1086,7 @@ Requirements：分别在两种底层配置运行；页数预期包含 header 和
 
 这一调用路径说明，uCore 执行了一次 8 字节的存储操作，QEMU 随后进入 TLB 填充处理流程，并通过页表查询获取映射关系。结合 `tlb_fill()` 的调用位置，可以观察到软件 TLB 未命中后的处理过程。
 
-![222\.png](IMAGES/222.png)
+![222\.png](images/222.png)
 
 
 
@@ -1098,7 +1098,7 @@ Sv39 使用三级页表结构，每级页表索引占 9 位，页内偏移占 12
 
 本次调试还查看了根页表的第 511 项，其值为 `0x200000cf`。该页表项的有效位及读、写、执行权限位均已设置，属于叶子页表项。由于该映射在根级就结束了页表遍历，因此本次访问不需要继续查询第二级和第三级页表。这也说明，Sv39 虽然采用三级页表结构，但实际查询深度取决于叶子页表项所在的层级。
 
-![333\.png](IMAGES/333.png)
+![333\.png](images/333.png)
 
 ### （4）地址翻译结果与访问权限
 
@@ -1112,7 +1112,7 @@ Sv39 使用三级页表结构，每级页表索引占 9 位，页内偏移占 12
 
 
 
-![444\.png](IMAGES/444.png)
+![444\.png](images/444.png)
 
 ### （5）调试过程中的问题与收获
 
@@ -1207,7 +1207,7 @@ x/gx satp_virtual + 511
 
 GDB 实际输出的主要结果如下：
 
-![gdb\.png](IMAGES/gdb.png)
+![gdb\.png](images/gdb.png)
 
 
 
@@ -1313,7 +1313,7 @@ check_alloc_page() succeeded!
 
 完整运行结果如下图所示。
 
-![first\_fit\.png](IMAGES/first_fit.png)
+![first\_fit\.png](images/first_fit.png)
 
 
 
@@ -1445,7 +1445,7 @@ PASS BEST_FIT_MODULE
 
 
 
-![image\.png](IMAGES/image%205.png)
+![image\.png](images/image%205.png)
 
 #### **官方评分测试**
 
@@ -1474,7 +1474,7 @@ Total Score: 20/20
 grade_exit=0
 ```
 
-![image\.png](IMAGES/image%208.png)
+![image\.png](images/image%208.png)
 
 
 
@@ -1534,7 +1534,7 @@ PASS buddy exhaustion / oversized request / failure unchanged
 PASS BUDDY_MODULE
 ```
 
-![image\.png](IMAGES/image%206.png)
+![image\.png](images/image%206.png)
 
 可以看到，实验结果满足预期。在 WSL 中实际完成交叉编译并生成 `.artifacts/buddy/check.elf`，说明 Buddy 测试源码通过严格编译选项。当前机器的 QEMU 在限定时间内停留于 OpenSBI 启动输出，尚未得到测试内核的 `PASS` 日志，因此最终提交前仍需在课程镜像或能够正常启动 QEMU 的环境中复跑上述命令；不能仅凭源码中存在 `PASS` 字符串判定测试通过。
 
@@ -1561,9 +1561,9 @@ buddy_check() succeeded!
 check_alloc_page() succeeded!
 ```
 
-![image\.png](IMAGES/image%202.png)
+![image\.png](images/image%202.png)
 
-![image\.png](IMAGES/image%207.png)
+![image\.png](images/image%207.png)
 
 第一个`memory management: buddy_pmm_manager`证明编译期选择已生效，后两个说明 Buddy 自检以及 PMM 统一检查入口均已执行完成。`timeout` 退出不代表内核失败，因为实验内核完成初始化后会停留在无限循环中；应以日志中是否出现 panic 和成功标志为判断依据。
 
@@ -1578,7 +1578,7 @@ make grade
 
 官方评分脚本主要验证物理内存初始化、地址边界和 Best\-Fit 等基础要求；Buddy Challenge 则由第 5\.3 节的独立脚本补充验证。两者结合能够区分“基础实验功能回归”与“挑战算法专项正确性”。执行后应保存完整评分汇总，确认不存在 `FAIL`、`kernel panic` 或编译错误。
 
-![image\.png](IMAGES/image%204.png)
+![image\.png](images/image%204.png)
 
 **3\. 验收结论**
 
@@ -1685,7 +1685,7 @@ PASS SLUB_MODULE
 
 其中，8192 字节对象加上页首元数据需要申请 3 页，Best\-Fit 按原申请页数实际占用 3 页。
 
-![image\.png](IMAGES/image.png)
+![image\.png](images/image.png)
 
 #### **Buddy 后端测试**
 
@@ -1718,7 +1718,7 @@ PASS SLUB_MODULE
 
 SLUB 仍然按对象大小申请 3 页，Buddy 将其向上取整为 4 页块。释放时 SLUB 传回原申请页数，Buddy 根据相同规则找到并归还完整的 4 页块，因此测试结束后空闲页数能够恢复。
 
-![image\.png](IMAGES/image%203.png)
+![image\.png](images/image%203.png)
 
 
 
