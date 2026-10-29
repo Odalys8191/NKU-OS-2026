@@ -139,6 +139,23 @@ void interrupt_handler(struct trapframe *tf) {
     }
 }
 
+/* lab3 function2 2412566 */
+void exception_handler(struct trapframe *tf) {
+    switch (tf->cause) {
+    case CAUSE_BREAKPOINT:
+        cprintf("Breakpoint at %p\n", (void *)tf->epc);
+        tf->epc += 2;
+        break;
+    case CAUSE_ILLEGAL_INSTRUCTION:
+        cprintf("Illegal instruction at %p\n", (void *)tf->epc);
+        tf->epc += 4;
+        break;
+    default:
+        print_trapframe(tf);
+        break;
+    }
+}
+
 
 static inline void trap_dispatch(struct trapframe *tf) {
     if ((intptr_t)tf->cause < 0) {
