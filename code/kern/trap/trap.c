@@ -6,10 +6,12 @@
 #include <memlayout.h>
 #include <mmu.h>
 #include <riscv.h>
+#include <sbi.h>
 #include <stdio.h>
 #include <trap.h>
 
 #define TICK_NUM 100
+#define SHUTDOWN_AFTER 3  // Project decision: number of "100 ticks" outputs.
 
 static void print_ticks() {
     cprintf("%d ticks\n", TICK_NUM);
@@ -106,6 +108,9 @@ void interrupt_handler(struct trapframe *tf) {
         ticks++;
         if (ticks % TICK_NUM == 0) {
             print_ticks();
+            if (ticks / TICK_NUM == SHUTDOWN_AFTER) {
+                sbi_shutdown();
+            }
         }
         break;
     case IRQ_H_TIMER:
