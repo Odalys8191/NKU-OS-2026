@@ -8,6 +8,7 @@
 #include <elf.h>
 #include <vmm.h>
 #include <trap.h>
+#include <riscv.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
@@ -86,7 +87,7 @@ char *
 set_proc_name(struct proc_struct *proc, const char *name)
 {
     memset(proc->name, 0, sizeof(proc->name));
-    return memcpy(proc->name, name, PROC_NAME_LEN);
+    return strncpy(proc->name, name, PROC_NAME_LEN);
 }
 
 // get_proc_name - get the name of proc
@@ -218,7 +219,185 @@ init_main(void *arg)
     return 0;
 }
 
-//LAB4 function2 YOUR CODE
+//LAB4 function2 2412103
+static struct proc_struct *
+alloc_proc(void)
+{
+    struct proc_struct *proc = kmalloc(sizeof(struct proc_struct));
+    if (proc == NULL)
+    {
+        return NULL;
+    }
 
+    proc->state = PROC_UNINIT;
+    proc->pid = -1;
+    proc->runs = 0;
+    proc->kstack = 0;
+    proc->need_resched = 0;
+    proc->parent = NULL;
+    proc->mm = NULL;
+    memset(&proc->context, 0, sizeof(proc->context));
+    proc->tf = NULL;
+    proc->pgdir = boot_pgdir_pa;
+    proc->flags = 0;
+    memset(proc->name, 0, sizeof(proc->name));
+    list_init(&proc->list_link);
+    list_init(&proc->hash_link);
+    return proc;
+}
 
-//LAB4 function3 YOUR CODE
+void
+proc_init(void)
+{
+    size_t i;
+
+    list_init(&proc_list);
+    for (i = 0; i < HASH_LIST_SIZE; i++)
+    {
+        list_init(&hash_list[i]);
+    }
+    nr_process = 0;
+    idleproc = initproc = current = NULL;
+
+    idleproc = alloc_proc();
+    if (idleproc == NULL)
+    {
+        panic("cannot allocate idle process");
+    }
+    idleproc->pid = 0;
+    idleproc->state = PROC_RUNNABLE;
+    idleproc->kstack = (uintptr_t)bootstack;
+    idleproc->need_resched = 1;
+    set_proc_name(idleproc, "idle");
+    list_add(&proc_list, &idleproc->list_link);
+    nr_process++;
+    current = idleproc;
+
+    int pid = kernel_thread(init_main, (void *)"Hello world!!", 0);
+    if (pid < 0 || (initproc = find_proc(pid)) == NULL)
+    {
+        panic("cannot create init process");
+    }
+    set_proc_name(initproc, "init");
+    assert(initproc->pid == 1 && initproc->parent == idleproc);
+}
+
+//LAB4 function3 2412103
+int
+kernel_thread(int (*fn)(void *), void *arg, uint32_t clone_flags)
+{
+    struct trapframe tf;
+
+    if (fn == NULL)
+    {
+        return -E_INVAL;
+    }
+
+    memset(&tf, 0, sizeof(tf));
+    asm volatile("mv %0, gp" : "=r"(tf.gpr.gp));
+    asm volatile("mv %0, tp" : "=r"(tf.gpr.tp));
+    tf.gpr.s0 = (uintptr_t)fn;
+    tf.gpr.s1 = (uintptr_t)arg;
+    tf.status = read_csr(sstatus);
+    tf.status &= ~SSTATUS_SIE;
+    tf.status |= SSTATUS_SPP | SSTATUS_SPIE;
+    tf.epc = (uintptr_t)kernel_thread_entry;
+    return do_fork(clone_flags, 0, &tf);
+}
+
+static void
+copy_thread(struct proc_struct *proc, uintptr_t stack, struct trapframe *tf)
+{
+    uintptr_t kstack_top;
+
+    assert(proc != NULL && proc->kstack != 0 && tf != NULL);
+    kstack_top = proc->kstack + KSTACKSIZE;
+    proc->tf = (struct trapframe *)(kstack_top - sizeof(struct trapframe));
+    memcpy(proc->tf, tf, sizeof(struct trapframe));
+    proc->tf->gpr.a0 = 0;
+    proc->tf->gpr.sp = (stack == 0)
+                           ? (uintptr_t)proc->tf
+                           : (stack & ~((uintptr_t)16 - 1));
+
+    assert((proc->tf->gpr.sp & 0xF) == 0);
+    proc->context.ra = (uintptr_t)forkret;
+    proc->context.sp = (uintptr_t)proc->tf;
+}
+
+static int
+copy_mm(uint32_t clone_flags, struct proc_struct *proc)
+{
+    (void)clone_flags;
+    assert(proc != NULL);
+
+    /* This Lab4 stage creates kernel threads only; user mm cloning is unsupported. */
+    if (current == NULL || current->mm != NULL)
+    {
+        return -E_INVAL;
+    }
+    proc->mm = NULL;
+    proc->pgdir = boot_pgdir_pa;
+    return 0;
+}
+
+int
+do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
+{
+    struct proc_struct *proc;
+    bool intr_flag;
+    int ret;
+
+    if (current == NULL || tf == NULL)
+    {
+        return -E_INVAL;
+    }
+
+    local_intr_save(intr_flag);
+    if (nr_process >= MAX_PROCESS)
+    {
+        local_intr_restore(intr_flag);
+        return -E_NO_FREE_PROC;
+    }
+    local_intr_restore(intr_flag);
+
+    proc = alloc_proc();
+    if (proc == NULL)
+    {
+        return -E_NO_MEM;
+    }
+    proc->parent = current;
+
+    if ((ret = setup_kstack(proc)) != 0)
+    {
+        goto failed;
+    }
+    if ((ret = copy_mm(clone_flags, proc)) != 0)
+    {
+        goto failed;
+    }
+    copy_thread(proc, stack, tf);
+
+    /* Serialize the capacity check and publication of the fully initialized PCB. */
+    local_intr_save(intr_flag);
+    if (nr_process >= MAX_PROCESS)
+    {
+        local_intr_restore(intr_flag);
+        ret = -E_NO_FREE_PROC;
+        goto failed;
+    }
+    proc->pid = get_pid();
+    hash_proc(proc);
+    list_add(&proc_list, &proc->list_link);
+    nr_process++;
+    wakeup_proc(proc);
+    local_intr_restore(intr_flag);
+    return proc->pid;
+
+failed:
+    if (proc->kstack != 0)
+    {
+        put_kstack(proc);
+    }
+    kfree(proc);
+    return ret;
+}
