@@ -152,6 +152,30 @@ forkret(void)
     forkrets(current->tf);
 }
 
+//LAB4 function3 2412566
+void
+proc_run(struct proc_struct *proc)
+{
+    if (proc == current)
+    {
+        return;
+    }
+
+    bool intr_flag;
+    local_intr_save(intr_flag);
+    struct proc_struct *prev = current;
+    current = proc;
+
+    uintptr_t satp = ((uintptr_t)SATP_MODE_SV39 << 60) |
+                     ((proc->pgdir >> RISCV_PGSHIFT) & SATP64_PPN);
+    write_csr(satp, satp);
+    flush_tlb();
+    switch_to(&prev->context, &proc->context);
+
+    // Resuming this call also restores this thread's saved interrupt flag.
+    local_intr_restore(intr_flag);
+}
+
 // hash_proc - add proc into proc hash_list
 static void
 hash_proc(struct proc_struct *proc)
@@ -280,6 +304,19 @@ proc_init(void)
     }
     set_proc_name(initproc, "init");
     assert(initproc->pid == 1 && initproc->parent == idleproc);
+}
+
+//LAB4 function3 2412566
+void
+cpu_idle(void)
+{
+    while (1)
+    {
+        if (current->need_resched)
+        {
+            schedule();
+        }
+    }
 }
 
 //LAB4 function3 2412103
