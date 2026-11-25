@@ -111,7 +111,10 @@ void interrupt_handler(struct trapframe *tf)
 //lab5 function1 2412266 update exception_handler
 void exception_handler(struct trapframe *tf)
 {
-    if (tf->cause == CAUSE_USER_ECALL) {
+    //lab5 function2 2412103：接收启动线程的 32 位 ebreak。
+    if (tf->cause == CAUSE_USER_ECALL ||
+        (tf->cause == CAUSE_BREAKPOINT && trap_in_kernel(tf) &&
+         current != NULL && current->mm == NULL && tf->gpr.a0 == SYS_exec)) {
         tf->epc += 4;
         syscall();
         return;

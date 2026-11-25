@@ -91,6 +91,7 @@ static void hash_proc(struct proc_struct *proc);
 static void forkret(void);
 
 //lab4 2412266: migrated PCB baseline; Lab5 module 2 update belongs to B.
+//lab5 function2 2412103 update alloc_proc
 static struct proc_struct *
 alloc_proc(void)
 {
@@ -115,6 +116,10 @@ alloc_proc(void)
     memset(proc->name, 0, sizeof(proc->name));
     list_init(&proc->list_link);
     list_init(&proc->hash_link);
+    // 新进程尚未退出、等待或接入亲属链表。
+    proc->exit_code = 0;
+    proc->wait_state = 0;
+    proc->cptr = proc->yptr = proc->optr = NULL;
     return proc;
 }
 
@@ -156,6 +161,7 @@ cpu_idle(void)
 }
 
 //lab4 2412266: migrated kernel-thread baseline; Lab5 update belongs to B.
+//lab5 function2 2412103 update kernel_thread
 int
 kernel_thread(int (*fn)(void *), void *arg, uint32_t clone_flags)
 {
@@ -169,13 +175,14 @@ kernel_thread(int (*fn)(void *), void *arg, uint32_t clone_flags)
     memset(&tf, 0, sizeof(tf));
     asm volatile("mv %0, gp" : "=r"(tf.gpr.gp));
     asm volatile("mv %0, tp" : "=r"(tf.gpr.tp));
+    // 入口汇编从 s0、s1 取出函数和参数。
     tf.gpr.s0 = (uintptr_t)fn;
     tf.gpr.s1 = (uintptr_t)arg;
     tf.status = read_csr(sstatus);
     tf.status &= ~SSTATUS_SIE;
     tf.status |= SSTATUS_SPP | SSTATUS_SPIE;
     tf.epc = (uintptr_t)kernel_thread_entry;
-    return do_fork(clone_flags, 0, &tf);
+    return do_fork(clone_flags | CLONE_VM, 0, &tf);
 }
 
 //lab4 2412266: migrated initial trapframe and context construction.
@@ -200,7 +207,6 @@ copy_thread(struct proc_struct *proc, uintptr_t stack, struct trapframe *tf)
 
 
 
-//lab5 function2 YOUR CODE update alloc_proc
 
 
 // set_proc_name - set the name of proc
@@ -345,7 +351,6 @@ find_proc(int pid)
     return NULL;
 }
 
-//lab5 function2 YOUR CODE update kernel_thread
 
 
 // setup_kstack - alloc pages with size KSTACKPAGE as process kernel stack
@@ -411,7 +416,7 @@ copy_mm(uint32_t clone_flags, struct proc_struct *proc)
 
 
 
-//lab5 function2 YOUR CODE
+//lab5 function2 2412103
 
 
 //lab5 function3 YOUR CODE
@@ -571,19 +576,369 @@ int do_kill(int pid)
 #define KERNEL_EXECVE2(x, xstart, xsize) __KERNEL_EXECVE2(x, xstart, xsize)
 
 
-//lab5 function2 YOUR CODE
+//lab5 function2 2412103
+static int
+kernel_execve(const char *name, unsigned char *binary, size_t size)
+{
+    size_t len = strlen(name);
+    register uintptr_t a0 asm("a0") = SYS_exec;
+    register uintptr_t a1 asm("a1") = (uintptr_t)name;
+    register uintptr_t a2 asm("a2") = len;
+    register uintptr_t a3 asm("a3") = (uintptr_t)binary;
+    register uintptr_t a4 asm("a4") = size;
 
+    // S 态 ecall 用于 SBI，内核 exec 通过断点进入本地分发。
+    asm volatile(".option push\n.option norvc\nebreak\n.option pop"
+                 : "+r"(a0) : "r"(a1), "r"(a2), "r"(a3), "r"(a4) : "memory");
+    return (int)a0;
+}
 
+static bool
+exec_read(void *dst, const void *src, size_t len)
+{
+    struct mm_struct *mm = current->mm;
+    if (len == 0)
+        return 1;
+    if (!user_mem_check(mm, (uintptr_t)src, len, 0))
+        return 0;
+    if (mm == NULL)
+        return copy_from_user(NULL, dst, src, len, 0);
 
+    // 通过物理页别名读取，缺页或不可读映射直接返回错误。
+    uintptr_t addr = (uintptr_t)src;
+    while (len != 0) {
+        size_t chunk = PGSIZE - (addr % PGSIZE);
+        if (chunk > len)
+            chunk = len;
+        pte_t *pte = get_pte(mm->pgdir, addr, 0);
+        if (pte == NULL || (*pte & (PTE_V | PTE_U | PTE_R)) != (PTE_V | PTE_U | PTE_R))
+            return 0;
+        memcpy(dst, (char *)page2kva(pte2page(*pte)) + addr % PGSIZE, chunk);
+        addr += chunk;
+        dst = (char *)dst + chunk;
+        len -= chunk;
+    }
+    return 1;
+}
 
-// Member B: replace Lab4 init_main and implement user_main/kernel_execve/load_icode/do_execve/do_wait.
+static int
+load_icode(unsigned char *binary, size_t size)
+{
+    struct elfhdr elf;
+    if (size < sizeof(elf))
+        return -E_INVAL_ELF;
+    if (!exec_read(&elf, binary, sizeof(elf)))
+        return -E_INVAL;
+    // ELF64、小端、当前 ELF 版本、RISC-V 可执行文件。
+    if (elf.e_magic != ELF_MAGIC || elf.e_elf[0] != 2 ||
+        elf.e_elf[1] != 1 || elf.e_elf[2] != 1 || elf.e_type != 2 ||
+        elf.e_machine != 243 || elf.e_version != 1 ||
+        elf.e_ehsize != sizeof(elf) || elf.e_phentsize != sizeof(struct proghdr) ||
+        elf.e_phoff > size || elf.e_phnum > (size - elf.e_phoff) / sizeof(struct proghdr))
+        return -E_INVAL_ELF;
+
+    struct mm_struct *mm = mm_create();
+    if (mm == NULL)
+        return -E_NO_MEM;
+    int ret = setup_pgdir(mm);
+    if (ret != 0)
+        goto destroy_mm;
+
+    const uintptr_t stack_bottom = USTACKTOP - USTACKSIZE;
+    bool entry_valid = 0;
+    for (size_t i = 0; i < elf.e_phnum; i++) {
+        struct proghdr ph;
+        ret = -E_INVAL_ELF;
+        if (!exec_read(&ph, binary + elf.e_phoff + i * sizeof(ph), sizeof(ph))) {
+            ret = -E_INVAL;
+            goto destroy_pgdir;
+        }
+        if (ph.p_type != ELF_PT_LOAD)
+            continue;
+        if (ph.p_filesz > ph.p_memsz || ph.p_offset > size ||
+            ph.p_filesz > size - ph.p_offset)
+            goto destroy_pgdir;
+        if (ph.p_memsz == 0)
+            continue;
+        if (ph.p_va < USERBASE || ph.p_va >= stack_bottom ||
+            ph.p_memsz > stack_bottom - ph.p_va)
+            goto destroy_pgdir;
+
+        uintptr_t end = ph.p_va + ph.p_memsz;
+        uintptr_t start_page = ROUNDDOWN(ph.p_va, PGSIZE);
+        uintptr_t end_page = ROUNDUP(end, PGSIZE);
+        // mm_map 的插入路径要求页对齐后的区间互不重叠。
+        list_entry_t *head = &mm->mmap_list;
+        for (list_entry_t *le = list_next(head); le != head; le = list_next(le)) {
+            struct vma_struct *vma = le2vma(le, list_link);
+            if (start_page < vma->vm_end && vma->vm_start < end_page)
+                goto destroy_pgdir;
+        }
+
+        uint32_t vm_flags = 0, perm = PTE_U;
+        if (ph.p_flags & ELF_PF_R) {
+            vm_flags |= VM_READ;
+            perm |= PTE_R;
+        }
+        if (ph.p_flags & ELF_PF_W) {
+            vm_flags |= VM_WRITE;
+            perm |= PTE_W | PTE_R;
+        }
+        if (ph.p_flags & ELF_PF_X) {
+            vm_flags |= VM_EXEC;
+            perm |= PTE_X;
+            if (ph.p_va <= elf.e_entry && elf.e_entry < end)
+                entry_valid = 1;
+        }
+        if (vm_flags == 0)
+            goto destroy_pgdir;
+        ret = mm_map(mm, ph.p_va, ph.p_memsz, vm_flags, NULL);
+        if (ret != 0)
+            goto destroy_pgdir;
+
+        uintptr_t file_end = ph.p_va + ph.p_filesz;
+        for (uintptr_t addr = start_page; addr < end_page; addr += PGSIZE) {
+            struct Page *page = pgdir_alloc_page(mm->pgdir, addr, perm);
+            if (page == NULL) {
+                ret = -E_NO_MEM;
+                goto destroy_pgdir;
+            }
+            char *data = page2kva(page);
+            // 整页清零覆盖 BSS 和段边缘，再复制本页的文件数据。
+            memset(data, 0, PGSIZE);
+            uintptr_t lo = addr < ph.p_va ? ph.p_va : addr;
+            uintptr_t hi = addr + PGSIZE < file_end ? addr + PGSIZE : file_end;
+            if (lo < hi && !exec_read(data + (lo - addr),
+                                     binary + ph.p_offset + (lo - ph.p_va), hi - lo)) {
+                ret = -E_INVAL;
+                goto destroy_pgdir;
+            }
+        }
+    }
+
+    if (!entry_valid || (elf.e_entry & 1)) {
+        ret = -E_INVAL_ELF;
+        goto destroy_pgdir;
+    }
+    ret = mm_map(mm, stack_bottom, USTACKSIZE, VM_READ | VM_WRITE | VM_STACK, NULL);
+    if (ret != 0)
+        goto destroy_pgdir;
+    // 本实验未提供按需分配，预映射可用栈页并留出底部保护页。
+    for (uintptr_t addr = stack_bottom + PGSIZE; addr < USTACKTOP; addr += PGSIZE) {
+        struct Page *page = pgdir_alloc_page(mm->pgdir, addr, PTE_U | PTE_R | PTE_W);
+        if (page == NULL) {
+            ret = -E_NO_MEM;
+            goto destroy_pgdir;
+        }
+        memset(page2kva(page), 0, PGSIZE);
+    }
+
+    // 只在完整加载后切换地址空间，再释放旧页表。
+    bool intr_flag;
+    local_intr_save(intr_flag);
+    struct mm_struct *old_mm = current->mm;
+    mm_count_inc(mm);
+    current->mm = mm;
+    current->pgdir = PADDR(mm->pgdir);
+    asm volatile("fence.i" ::: "memory");
+    write_csr(satp, ((uintptr_t)SATP_MODE_SV39 << 60) |
+                    ((current->pgdir >> RISCV_PGSHIFT) & SATP64_PPN));
+    flush_tlb();
+    struct trapframe *tf = current->tf;
+    uintptr_t status = tf->status;
+    memset(tf, 0, sizeof(*tf));
+    tf->gpr.sp = USTACKTOP;
+    tf->epc = elf.e_entry;
+    tf->status = (status & ~(SSTATUS_SPP | SSTATUS_SIE)) | SSTATUS_SPIE;
+    if (old_mm != NULL && mm_count_dec(old_mm) == 0) {
+        exit_mmap(old_mm);
+        put_pgdir(old_mm);
+        mm_destroy(old_mm);
+    }
+    local_intr_restore(intr_flag);
+    return 0;
+
+destroy_pgdir:
+    exit_mmap(mm);
+    put_pgdir(mm);
+destroy_mm:
+    mm_destroy(mm);
+    return ret;
+}
+
+int
+do_execve(const char *name, size_t len, unsigned char *binary, size_t size)
+{
+    char buffer[PROC_NAME_LEN + 1] = {0};
+    if (len > PROC_NAME_LEN)
+        len = PROC_NAME_LEN;
+    if (name == NULL || binary == NULL || size == 0 ||
+        !user_mem_check(current->mm, (uintptr_t)binary, size, 0) ||
+        !exec_read(buffer, name, len))
+        return -E_INVAL;
+
+    int ret = load_icode(binary, size);
+    if (ret == 0)
+        set_proc_name(current, buffer);
+    return ret;
+}
+
+int
+do_wait(int pid, int *code_store)
+{
+    if (pid < 0)
+        return -E_INVAL;
+
+    bool intr_flag;
+    local_intr_save(intr_flag);
+    for (;;) {
+        if (current->flags & PF_EXITING)
+            do_exit(-E_KILLED);
+
+        bool has_child = 0;
+        struct proc_struct *child = pid == 0 ? current->cptr : find_proc(pid);
+        for (; child != NULL; child = pid == 0 ? child->optr : NULL) {
+            if (child->parent != current)
+                break;
+            has_child = 1;
+            if (child->state != PROC_ZOMBIE)
+                continue;
+
+            // 写回失败时保留僵尸进程，允许再次等待。
+            if (code_store != NULL &&
+                !copy_to_user(current->mm, code_store, &child->exit_code, sizeof(*code_store))) {
+                local_intr_restore(intr_flag);
+                return -E_INVAL;
+            }
+            unhash_proc(child);
+            remove_links(child);
+            local_intr_restore(intr_flag);
+            put_kstack(child);
+            kfree(child);
+            return 0;
+        }
+        if (!has_child) {
+            local_intr_restore(intr_flag);
+            return -E_BAD_PROC;
+        }
+
+        // 关中断完成检查和休眠登记，避免丢失子进程退出通知。
+        current->state = PROC_SLEEPING;
+        current->wait_state = WT_CHILD;
+        schedule();
+    }
+}
+
+static int
+user_main(void *arg)
+{
+    (void)arg;
+#if defined(TEST)
+    return KERNEL_EXECVE2(TEST, TESTSTART, TESTSIZE);
+#else
+    return KERNEL_EXECVE(exit);
+#endif
+}
+
+#ifdef LAB5_COW_CHECK
+//lab5 function2 2412103：独立状态模型，映射归属为只读源页或独占副本。
+static void
+check_cow_model(void)
+{
+    struct {
+        bool private_copy;
+        bool writable;
+    } mappings[] = {{0, 0}, {1, 0}};
+    unsigned int source_refs = 2, private_refs = 0;
+
+    // 归属已经更新，缓存的引用计数仍是旧值。
+    assert(source_refs == 2 && private_refs == 0 && !mappings[1].writable);
+    source_refs = private_refs = 0;
+    for (size_t i = 0; i < sizeof(mappings) / sizeof(mappings[0]); i++) {
+        // 从映射归属重建引用计数和写权限。
+        mappings[i].writable = mappings[i].private_copy;
+        if (mappings[i].private_copy)
+            private_refs++;
+        else
+            source_refs++;
+    }
+    assert(source_refs == 1 && private_refs == 1);
+    assert(!mappings[0].writable && mappings[1].writable);
+}
+
+static void
+check_cow(void)
+{
+    size_t free_before = nr_free_pages();
+    const uintptr_t rw = USERBASE, ro = USERBASE + PGSIZE;
+    struct mm_struct *spaces[3];
+    for (size_t i = 0; i < 3; i++) {
+        spaces[i] = mm_create();
+        assert(spaces[i] != NULL && setup_pgdir(spaces[i]) == 0);
+    }
+    struct mm_struct *parent = spaces[0];
+    assert(mm_map(parent, rw, PGSIZE, VM_READ | VM_WRITE, NULL) == 0);
+    assert(mm_map(parent, ro, PGSIZE, VM_READ, NULL) == 0);
+    struct Page *shared = pgdir_alloc_page(parent->pgdir, rw, PTE_U | PTE_R | PTE_W);
+    struct Page *readonly = pgdir_alloc_page(parent->pgdir, ro, PTE_U | PTE_R);
+    assert(shared != NULL && readonly != NULL);
+    *(char *)page2kva(shared) = 'P';
+
+    // 连续两次克隆，检查已经标记 COW 的页仍共享同一个物理页。
+    for (size_t i = 1; i < 3; i++)
+        assert(dup_mmap_cow(spaces[i], parent) == 0);
+    assert(page_ref(shared) == 3 && page_ref(readonly) == 3);
+    for (size_t i = 0; i < 3; i++) {
+        pte_t writable_pte = *get_pte(spaces[i]->pgdir, rw, 0);
+        pte_t readonly_pte = *get_pte(spaces[i]->pgdir, ro, 0);
+        assert(pte2page(writable_pte) == shared);
+        assert((writable_pte & (PTE_COW | PTE_W)) == PTE_COW);
+        assert(pte2page(readonly_pte) == readonly);
+        assert(!(readonly_pte & (PTE_COW | PTE_W)));
+        assert(cow_resolve(spaces[i], ro) == -E_INVAL);
+    }
+
+    assert(cow_resolve(spaces[1], rw) == 0);
+    struct Page *child = pte2page(*get_pte(spaces[1]->pgdir, rw, 0));
+    assert(child != shared && *(char *)page2kva(child) == 'P');
+    *(char *)page2kva(child) = 'C';
+    assert(cow_resolve(parent, rw) == 0);
+    struct Page *private_parent = pte2page(*get_pte(parent->pgdir, rw, 0));
+    assert(private_parent != shared && private_parent != child);
+    *(char *)page2kva(private_parent) = 'N';
+    assert(*(char *)page2kva(child) == 'C' && *(char *)page2kva(shared) == 'P');
+    assert(page_ref(shared) == 1 && cow_resolve(spaces[2], rw) == 0);
+    assert(pte2page(*get_pte(spaces[2]->pgdir, rw, 0)) == shared);
+
+    for (size_t i = 0; i < 3; i++) {
+        exit_mmap(spaces[i]);
+        put_pgdir(spaces[i]);
+        mm_destroy(spaces[i]);
+    }
+    assert(page_ref(shared) == 0 && page_ref(readonly) == 0);
+    assert(page_ref(child) == 0 && page_ref(private_parent) == 0);
+    assert(nr_free_pages() == free_before);
+    check_cow_model();
+}
+#endif
+
 static int
 init_main(void *arg)
 {
-    cprintf("Member A baseline ready: member B user loader is pending.\n");
-    // Keep the protected init process alive until B installs the real lifecycle.
-    for (;;) schedule();
-    return 0;
+    (void)arg;
+#ifdef LAB5_COW_CHECK
+    check_cow();
+#endif
+    int pid = kernel_thread(user_main, NULL, 0);
+    if (pid < 0)
+        panic("cannot create user launcher: %e", pid);
+    while (do_wait(0, NULL) == 0)
+        schedule();
+
+    assert(initproc->cptr == NULL && nr_process == 2);
+    cprintf("all user-mode processes have quit.\n");
+    for (;;)
+        schedule();
 }
 
 //lab4 2412266: migrated idle/init creation, pending B's user startup path.
