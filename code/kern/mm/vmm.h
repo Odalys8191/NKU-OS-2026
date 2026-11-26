@@ -51,6 +51,8 @@ void vmm_init(void);
 int mm_map(struct mm_struct *mm, uintptr_t addr, size_t len, uint32_t vm_flags,
            struct vma_struct **vma_store);
 int mm_unmap(struct mm_struct *mm, uintptr_t addr, size_t len);
+// Caller locks from; to is a fresh, unpublished mm with a page-table root.
+// Failure retains all linked VMAs/mappings: exit_mmap, free root, mm_destroy.
 int dup_mmap(struct mm_struct *to, struct mm_struct *from);
 // lab5 2412266: use instead of dup_mmap for private fork, never CLONE_VM.
 int dup_mmap_cow(struct mm_struct *to, struct mm_struct *from);

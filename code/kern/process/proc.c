@@ -397,21 +397,51 @@ put_pgdir(struct mm_struct *mm)
     free_page(kva2page(mm->pgdir));
 }
 
-//lab5 function3 YOUR CODE update copy_mm
-// Member C: replace Lab4 kernel-only baseline with user mm cloning.
+//lab5 function3 2412566 update copy_mm
+// Member C (2412566): ordinary fork.
 static int
 copy_mm(uint32_t clone_flags, struct proc_struct *proc)
 {
-    (void)clone_flags;
-    assert(proc != NULL);
+    assert(proc != NULL && current != NULL);
 
-    /* This Lab4 stage creates kernel threads only; user mm cloning is unsupported. */
-    if (current == NULL || current->mm != NULL)
-    {
-        return -E_UNIMP;
-    }
+    struct mm_struct *oldmm = current->mm, *mm;
+    int ret;
     proc->mm = NULL;
     proc->pgdir = boot_pgdir_pa;
+    if (oldmm == NULL)
+    {
+        return 0;
+    }
+    if (clone_flags & CLONE_VM)
+    {
+        mm = oldmm;
+    }
+    else
+    {
+        if ((mm = mm_create()) == NULL)
+        {
+            return -E_NO_MEM;
+        }
+        if ((ret = setup_pgdir(mm)) != 0)
+        {
+            mm_destroy(mm);
+            return ret;
+        }
+        lock_mm(oldmm);
+        /* A's future COW integration point; see ADR 0008 cleanup contract. */
+        ret = dup_mmap(mm, oldmm);
+        unlock_mm(oldmm);
+        if (ret != 0)
+        {
+            exit_mmap(mm);
+            put_pgdir(mm);
+            mm_destroy(mm);
+            return ret;
+        }
+    }
+    mm_count_inc(mm);
+    proc->mm = mm;
+    proc->pgdir = PADDR(mm->pgdir);
     return 0;
 }
 
@@ -420,8 +450,8 @@ copy_mm(uint32_t clone_flags, struct proc_struct *proc)
 //lab5 function2 2412103
 
 
-//lab5 function3 YOUR CODE
-// Member C: upgrade the migrated kernel-thread creation path.
+//lab5 function3 2412566
+// Member C: prepare privately, then publish exactly once with interrupts off.
 int
 do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
 {
@@ -458,6 +488,11 @@ do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
         goto failed;
     }
     copy_thread(proc, stack, tf);
+    if (current->mm != NULL)
+    {
+        /* sys_fork supplies a valid user sp; preserve it without rounding. */
+        proc->tf->gpr.sp = stack;
+    }
 
     /* Serialize the capacity check and publication of the fully initialized PCB. */
     local_intr_save(intr_flag);
@@ -475,6 +510,18 @@ do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
     return proc->pid;
 
 failed:
+    if (proc->mm != NULL)
+    {
+        struct mm_struct *mm = proc->mm;
+        proc->mm = NULL;
+        proc->pgdir = boot_pgdir_pa;
+        if (mm_count_dec(mm) == 0)
+        {
+            exit_mmap(mm);
+            put_pgdir(mm);
+            mm_destroy(mm);
+        }
+    }
     if (proc->kstack != 0)
     {
         put_kstack(proc);

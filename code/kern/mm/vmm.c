@@ -202,9 +202,39 @@ out:
     return ret;
 }
 
-//lab5 function3 YOUR CODE 
+//lab5 function3 2412566
+// Member C: source lock belongs to copy_mm; destination is unpublished.
+int dup_mmap(struct mm_struct *to, struct mm_struct *from)
+{
+    assert(to != NULL && from != NULL && to != from);
+    assert(to->pgdir != NULL && from->pgdir != NULL);
+    assert(mm_count(to) == 0 && to->map_count == 0 &&
+           list_empty(&to->mmap_list));
 
-
+    list_entry_t *head = &from->mmap_list;
+    for (list_entry_t *le = list_next(head); le != head; le = list_next(le))
+    {
+        struct vma_struct *vma = le2vma(le, list_link);
+        struct vma_struct *new = vma_create(vma->vm_start, vma->vm_end,
+                                          vma->vm_flags);
+        if (new == NULL)
+        {
+            return -E_NO_MEM;
+        }
+        // Publish metadata first so exit_mmap also covers a partial copy.
+        // insert_vma_struct sets vm_mm, checks order and updates map_count.
+        insert_vma_struct(to, new);
+        int ret = copy_range(to->pgdir, from->pgdir, vma->vm_start,
+                             vma->vm_end, 0 /* share=false */);
+        if (ret != 0)
+        {
+            return ret;
+        }
+    }
+    // On failure as well, copy_mm owns exit_mmap -> put_pgdir -> mm_destroy.
+    // No unlinked temporary VMA survives: allocation is immediately inserted.
+    return 0;
+}
 
 void exit_mmap(struct mm_struct *mm)
 {

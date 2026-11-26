@@ -93,7 +93,39 @@ static inline void __slob_free_pages(unsigned long kva, int order)
 	free_pages(kva2page((void *)kva), 1 << order);
 }
 
-static void slob_free(void *b, int size);
+/* Insert and coalesce under the SLOB lock, returning the link to the result. */
+static slob_t **slob_insert(slob_t *b)
+{
+	slob_t *prev = &arena, *cur = &arena;
+	uintptr_t start = (uintptr_t)b;
+	for (;; prev = cur, cur = cur->next)
+	{
+		uintptr_t addr = (uintptr_t)cur;
+		uintptr_t next = (uintptr_t)cur->next;
+		if ((addr < start && start < next) ||
+		    (addr >= next && (addr < start || start < next)))
+			break;
+	}
+
+	b->next = cur->next;
+	if (b->next != &arena && b + b->units == b->next)
+	{
+		b->units += b->next->units;
+		b->next = b->next->next;
+	}
+	if (cur != &arena && cur + cur->units == b)
+	{
+		cur->units += b->units;
+		cur->next = b->next;
+		cur = prev;
+	}
+	else
+		cur->next = b;
+
+	/* The predecessor remains valid even if the merged block is reclaimed. */
+	slobfree = cur;
+	return &cur->next;
+}
 
 static void *slob_alloc(size_t size, gfp_t gfp, int align)
 {
@@ -112,7 +144,7 @@ static void *slob_alloc(size_t size, gfp_t gfp, int align)
 			aligned = (slob_t *)ALIGN((unsigned long)cur, align);
 			delta = aligned - cur;
 		}
-		if (cur->units >= units + delta)
+		if (cur != &arena && cur->units >= units + delta)
 		{ /* room enough? */
 			if (delta)
 			{ /* need to fragment head to align? */
@@ -142,15 +174,14 @@ static void *slob_alloc(size_t size, gfp_t gfp, int align)
 		{
 			spin_unlock_irqrestore(&slob_lock, flags);
 
-			if (size == PAGE_SIZE) /* trying to shrink arena? */
-				return 0;
-
 			cur = (slob_t *)__slob_get_free_page(gfp);
 			if (!cur)
 				return 0;
 
-			slob_free(cur, PAGE_SIZE);
 			spin_lock_irqsave(&slob_lock, flags);
+			/* Keep the refill available until this allocation can use it. */
+			cur->units = SLOB_UNITS(PAGE_SIZE);
+			slob_insert(cur);
 			cur = slobfree;
 		}
 	}
@@ -158,7 +189,7 @@ static void *slob_alloc(size_t size, gfp_t gfp, int align)
 
 static void slob_free(void *block, int size)
 {
-	slob_t *cur, *b = (slob_t *)block;
+	slob_t *b = (slob_t *)block;
 	unsigned long flags;
 
 	if (!block)
@@ -167,29 +198,34 @@ static void slob_free(void *block, int size)
 	if (size)
 		b->units = SLOB_UNITS(size);
 
-	/* Find reinsertion point */
 	spin_lock_irqsave(&slob_lock, flags);
-	for (cur = slobfree; !(b > cur && b < cur->next); cur = cur->next)
-		if (cur >= cur->next && (b > cur || b < cur->next))
-			break;
-
-	if (b + b->units == cur->next)
+	slob_t **link = slob_insert(b);
+	b = *link;
+	uintptr_t start = (uintptr_t)b;
+	uintptr_t end = start + b->units * SLOB_UNIT;
+	uintptr_t page_start = ROUNDUP(start, PAGE_SIZE);
+	uintptr_t page_end = ROUNDDOWN(end, PAGE_SIZE);
+	if (page_start < page_end)
 	{
-		b->units += cur->next->units;
-		b->next = cur->next->next;
+		/* Keep only the edge fragments; unlink all returned pages first. */
+		slob_t *next = b->next;
+		if (page_end < end)
+		{
+			slob_t *tail = (slob_t *)page_end;
+			tail->units = SLOB_UNITS(end - page_end);
+			tail->next = next;
+			next = tail;
+		}
+		if (start < page_start)
+		{
+			b->units = SLOB_UNITS(page_start - start);
+			b->next = next;
+		}
+		else
+			*link = next;
+		free_pages(kva2page((void *)page_start),
+			   (page_end - page_start) / PAGE_SIZE);
 	}
-	else
-		b->next = cur->next;
-
-	if (cur + cur->units == b)
-	{
-		cur->units += b->units;
-		cur->next = b->next;
-	}
-	else
-		cur->next = b;
-
-	slobfree = cur;
 
 	spin_unlock_irqrestore(&slob_lock, flags);
 }

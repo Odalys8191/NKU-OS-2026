@@ -399,7 +399,46 @@ void exit_range(pde_t *pgdir, uintptr_t start, uintptr_t end)
     }
 }
 
-//lab5 function3 YOUR CODE 
+//lab5 function3 2412566
+// Member C (2412566): ordinary private user pages; COW uses copy_range_cow instead.
+int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool share)
+{
+    assert(to != NULL && from != NULL && to != from);
+    assert(start % PGSIZE == 0 && end % PGSIZE == 0);
+    assert(USER_ACCESS(start, end));
+    if (share) return -E_UNIMP;
+
+    for (uintptr_t addr = start; addr < end; ) {
+        pte_t *src = get_pte(from, addr, 0);
+        if (src == NULL) {
+            // No ordinary leaf table: skip to the next 2 MiB boundary.
+            addr = ROUNDDOWN(addr, PTSIZE) + PTSIZE;
+            continue;
+        }
+        if (*src & PTE_V) {
+            // Only ordinary 4 KiB user leaves are supported here.
+            if (!(*src & PTE_U) || !(*src & (PTE_R | PTE_X)) ||
+                ((*src & PTE_W) && !(*src & PTE_R))) return -E_INVAL;
+            if (*src & PTE_COW) return -E_UNIMP;
+            pte_t *dst = get_pte(to, addr, 0);
+            assert(dst == NULL || *dst == 0);
+            struct Page *page = alloc_page();
+            if (page == NULL) return -E_NO_MEM;
+            memcpy(page2kva(page), page2kva(pte2page(*src)), PGSIZE);
+            uint32_t perm = *src & (PTE_U | PTE_R | PTE_W | PTE_X);
+            int ret = page_insert(to, page, addr, perm);
+            if (ret != 0) {
+                // Insertion failed before taking a mapping reference.
+                free_page(page);
+                return ret;
+            }
+            // page_insert owns the sole mapping reference now. The caller
+            // unmaps inserted pages and frees tables on any later failure.
+        }
+        addr += PGSIZE;
+    }
+    return 0;
+}
 
 
 //lab4 2412266: migrated page-mapping removal.

@@ -47,6 +47,10 @@ void tlb_invalidate(pde_t *pgdir, uintptr_t la);
 struct Page *pgdir_alloc_page(pde_t *pgdir, uintptr_t la, uint32_t perm);
 void unmap_range(pde_t *pgdir, uintptr_t start, uintptr_t end);
 void exit_range(pde_t *pgdir, uintptr_t start, uintptr_t end);
+// Member C (2412566): distinct roots, aligned user range, empty destination; share=false.
+// Caller holds source mm stable and owns destination. On failure, unmap_range
+// then exit_range over ALL destination VMAs before freeing its root.
+// share=true / PTE_COW are unsupported (-E_UNIMP); use the separate COW API.
 int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool share);
 // lab5 2412266: destination range must be empty; caller cleans failed child mm.
 int copy_range_cow(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end);
