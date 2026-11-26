@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <unistd.h>
+#include <kmonitor.h>
 
 /* ------------- process/thread mechanism design&implementation -------------
 (an simplified Linux process/thread mechanism )
@@ -787,6 +788,9 @@ int
 do_wait(int pid, int *code_store)
 {
     if (pid < 0)
+        return -E_BAD_PROC;
+    if (code_store != NULL &&
+        !user_mem_check(current->mm, (uintptr_t)code_store, sizeof(*code_store), 1))
         return -E_INVAL;
 
     bool intr_flag;
@@ -929,6 +933,9 @@ init_main(void *arg)
 #ifdef LAB5_COW_CHECK
     check_cow();
 #endif
+    // 在创建用户进程前记录基线，回收所有后代后核对。
+    size_t free_pages_before = nr_free_pages();
+    size_t allocated_before = kallocated();
     int pid = kernel_thread(user_main, NULL, 0);
     if (pid < 0)
         panic("cannot create user launcher: %e", pid);
@@ -937,6 +944,10 @@ init_main(void *arg)
 
     assert(initproc->cptr == NULL && nr_process == 2);
     cprintf("all user-mode processes have quit.\n");
+    assert(nr_free_pages() == free_pages_before);
+    assert(kallocated() == allocated_before);
+    cprintf("init check memory pass.\n");
+    kmonitor(NULL);
     for (;;)
         schedule();
 }
